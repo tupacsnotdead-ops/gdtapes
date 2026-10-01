@@ -1,0 +1,203 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild
+.cxx
+
+plugins {
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.kotlin.android) apply false
+}
+
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+org.gradle.parallel=true
+org.gradle.caching=true
+android.useAndroidX=true
+android.nonTransitiveRClass=true
+kotlin.code.style=official
+
+# Dead Tapes — Android Auto
+
+A native Android media app that browses the Grateful Dead and Phish live-tape
+collections on archive.org and plays them in the car.
+
+The website this came from can't do Android Auto, and no wrapper can: Auto
+requires a native `MediaLibraryService`, and it never renders your app's UI — it
+asks the service for the children of a node and draws its own driver-safe lists.
+That service is what this project is.
+
+---
+
+## Getting an APK
+
+Two routes. For the **first** build, use Android Studio — this project has never
+been compiled (see the caveats at the bottom), and the IDE shows you compile
+errors inline with quick-fixes, which is a far faster loop than reading CI logs.
+Once it compiles cleanly, CI is the easy way to rebuild.
+
+### A. Android Studio (recommended first)
+
+Open the folder, let it sync, press Run. It will offer to install anything
+missing and will regenerate the Gradle wrapper on first sync.
+
+### B. GitHub Actions — an APK with nothing installed locally
+
+`.github/workflows/build.yml` builds on GitHub's runners, which already carry
+the Android SDK.
+
+1. Make a repo (private is fine) and push this folder to it.
+2. Open the **Actions** tab. The build starts on push, or run it by hand from
+   **Build APK → Run workflow**.
+3. When it finishes, download **dead-tapes-debug-apk** from the run's Artifacts,
+   copy the `.apk` to your phone and open it.
+
+If the build fails, the run also uploads `build-reports` — the compile errors
+will be in there.
+
+### C. Command line, if you already have the SDK
+
+You need **Android Studio** (any recent version) and a phone with USB debugging on.
+
+```bash
+# from the project root
+./gradlew assembleDebug
+# -> app/build/outputs/apk/debug/app-debug.apk
+
+# or straight onto a connected phone
+./gradlew installDebug
+```
+
+The Gradle wrapper JAR isn't included (it's a binary). Either open the folder in
+Android Studio, which regenerates it on first sync, or run `gradle wrapper` once
+if you have Gradle installed.
+
+Versions are pinned in `gradle/libs.versions.toml` — AGP 9.4.0, Gradle 9.6,
+Kotlin 2.2.0, Media3 1.11.1, compileSdk 36, minSdk 23. If Android Studio offers
+to update any of them, let it.
+
+## Turn on Android Auto for a sideloaded app
+
+Auto refuses unknown apps until you tell it otherwise. Once per phone:
+
+1. Open **Android Auto** settings (on newer Android it's under
+   *Settings → Connected devices → Android Auto*).
+2. Scroll to **Version** and tap it about ten times to unlock developer mode.
+3. From the ⋮ menu choose **Developer settings**.
+4. Tick **Unknown sources**.
+
+Then plug into the car (or run the **Desktop Head Unit** from the Android SDK to
+test at a desk). "Dead Tapes" appears in the media app switcher.
+
+---
+
+## How it's laid out in the car
+
+```
+Tapes
+ ├── Grateful Dead  1965–1995
+ │    └── 1973
+ │         └── 11.01.73  McGaw Memorial Hall        ← tap plays the best tape
+ │              ├── SBD · 4.9 · 88,123 plays        ← or pick a different one
+ │              │    ├── Morning Dew
+ │              │    └── Dark Star
+ │              └── AUD · Nakamichi 300
+ └── Phish  1983–2026
+      └── 1997
+           └── 11.22.97  Hampton Coliseum
+```
+
+Shows and tapes are **both playable and browsable**: one tap starts the
+best-rated recording, drilling in lets you choose. Selecting a single song
+queues the whole tape from that point, so skip-next walks the rest of the night
+instead of stopping.
+
+## What carried over from the website
+
+- Both bands, including the Phish adapter. Phish have no archive.org collection
+  of their own and their items carry no venue, coverage, source or rating
+  fields — so venue and city are parsed from the title, and the recording
+  lineage (`ck61 > akg460`) out of the identifier. Ratings are simply absent for
+  Phish rather than shown empty.
+- SBD / MTX / FM / AUD detection, widened to recognise taper rigs by name.
+- Best-tape-first ordering, so the default choice is the good one.
+- Album art per tape from `archive.org/services/img/{identifier}`.
+
+## Files worth knowing
+
+| File | What it does |
+|---|---|
+| `TapeService.kt` | The `MediaLibraryService` Android Auto binds to. |
+| `BrowseTree.kt` | Builds every `MediaItem` Auto renders; media-id grammar. |
+| `Archive.kt` | archive.org search + metadata, paging, grouping by night. |
+| `Bands.kt` | The two bands and the per-band field quirks. |
+| `MainActivity.kt` | Phone UI — walks the same tree via a `MediaBrowser`. |
+| `res/xml/automotive_app_desc.xml` | Declares this a car media app. |
+
+The phone screen deliberately browses through `MediaBrowser` rather than calling
+`Archive` directly, so anything you can see on the phone is proof the car path
+works. Test there first.
+
+---
+
+## Honest caveats
+
+**This has never been compiled.** It was written without an Android SDK
+available, so treat the first build as a debugging session rather than a
+formality. The logic is in better shape than that sounds — the identifier and
+title parsing was ported out and tested against real archive.org strings — but
+expect the compiler to find something.
+
+Specific places to look if it complains:
+
+- `MediaMetadata.MEDIA_TYPE_FOLDER_*` constants. I used only `MIXED`, `ALBUMS`,
+  `ARTISTS` and `ALBUM`, which are the safe ones.
+- The `onAddMediaItems` / `onSetMediaItems` overrides in `TapeService.kt` —
+  Kotlin's `List` vs `MutableList` mapping of the Java signatures is the usual
+  friction point. Android Studio's "override method" quick-fix will correct them.
+- Error results are avoided entirely: an unknown node or a failed network call
+  returns an **empty folder** rather than an error, because an empty list is
+  recoverable in a car and a thrown error can wedge the host. That also sidesteps
+  the `LibraryResult.ofError` signature, which changed across Media3 versions.
+
+**Not implemented yet**, in rough order of how much they'd add:
+
+- Voice search (`onGetSearchResult`) — "play Grateful Dead November 1973".
+  Auto forbids typing while moving, so voice is the real search.
+- Offline downloads. Everything streams; caching is in-memory and dies with the
+  process. A long drive through bad signal will stall.
+- Years with many shows are one long list. Auto imposes limits on how many items
+  a node may return; 1977 is around eighty shows, which is fine, but if a list
+  ever looks truncated the fix is a month level between year and show.
+- Setlist links. They're web-only — there's nowhere sensible to put a link in a
+  driving UI.
+
+**Don't publish it to Play.** Car media apps go through a driver-distraction
+review, and this is a personal sideload. Keep it on your own phone.
+
+pluginManagement {
+    repositories {
+        google {
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("com\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "Dead Tapes"
+include(":app")
